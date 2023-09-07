@@ -1,71 +1,198 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import argparse
+import pathlib as pl
+import re
 import sys
 
-parser = argparse.ArgumentParser(
-    description="", formatter_class=argparse.ArgumentDefaultsHelpFormatter
-)
-parser.add_argument(
-    "infile", help="input bam file"
-)  # ,  type=argparse.FileType('r'), default=sys.stdin)
-parser.add_argument("outfile", help="output plot file")
-parser.add_argument("-d", action="store_true", default=False)
-parser.add_argument("--legend", action="store_true", default=False)
-parser.add_argument("--zerostart", action="store_true", default=False)
-parser.add_argument(
-    "-a", help="output all positions", action="store_true", default=False
-)
-parser.add_argument(
-    "-r",
-    "--repeatmasker",
-    help="rm out to add to plot",
-    type=argparse.FileType("r"),
-    default=None,
-)
-parser.add_argument(
-    "--regions", nargs="*", help="regions in this format (.*):(\d+)-(\d+)"
-)
-parser.add_argument("--bed", default=None, help="bed file with regions to plot")
-parser.add_argument("--obed", default=None, help="output a bed with the data points")
-parser.add_argument(
-    "--minobed",
-    help="min number of discordant bases to report in obed",
-    type=int,
-    default=2,
-)
-parser.add_argument("-y", "--ylim", help="max y axis limit", type=float, default=None)
-parser.add_argument("-f", "--font-size", help="plot font-size", type=int, default=16)
-parser.add_argument("--freey", action="store_true", default=False)
-parser.add_argument("--height", help="figure height", type=float, default=4)
-parser.add_argument("-w", "--width", help="figure width", type=float, default=16)
-parser.add_argument("--dpi", help="dpi for png", type=float, default=600)
-parser.add_argument("-t", "--threads", help="[8]", type=int, default=8)
-parser.add_argument("--header", action="store_true", default=False)
-parser.add_argument("--psvsites", help="CC/mi.gml.sites", default=None)
-parser.add_argument("-s", "--soft", action="store_true", default=False)
-parser.add_argument(
-    "-c",
-    "--minclip",
-    help="min number of clippsed bases in order to be displayed",
-    type=float,
-    default=1000,
-)
-args = parser.parse_args()
-sys.stderr.write(f"Using a font-size of {args.font_size}\n")
-
-import os
-import numpy as np
-import pysam
-import re
-import pandas as pd
 import matplotlib
-
-matplotlib.use("agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.collections import PatchCollection
+import numpy as np
+import pandas as pd
+import pysam
 import seaborn as sns
-from multiprocessing import Pool
+
+matplotlib.use("agg")
+
+__author__ = "Mitchell Vollger"
+__developer__ = "Peter Ebert"
+
+
+def parse_command_line():
+
+    parser = argparse.ArgumentParser(
+        description="",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    io_group = parser.add_argument_group("File I/O")
+
+    io_group.add_argument(
+        "--infile",
+        "-i",
+        type=lambda x: pl.Path(x).resolve(strict=True),
+        dest="infile",
+        help="Path to BAM input (mode: process) or hdf (mode: plot).",
+        required=True
+    )
+    io_group.add_argument(
+        "--in-bed-regions"
+        "--bed",
+        type=lambda x: pl.Path(x).resolve(strict=True),
+        dest="in_bed_regions",
+        default=None,
+        help="BED file with regions to plot. Default: None"
+    )
+    io_group.add_argument(
+        "--out-bed-data",
+        "--obed",
+        type=lambda x: pl.Path(x).resolve(strict=True),
+        dest="out_bed_data",
+        default=None,
+        help="Output a BED file with the data points. Default: None"
+    )
+    io_group.add_argument(
+        "--repeatmasker",
+        "-rm",
+        type=lambda x: pl.Path(x).resolve(strict=True),
+        default=None,
+        dest="repeatmasker",
+        help="Path to repeatmasker output to add to the plot. Default: None"
+    )
+    io_group.add_argument(
+        "--out-plot",
+        "-op",
+        type=lambda x: pl.Path(x).resolve(strict=False),
+        dest="out_plot",
+        help="Path to plot output file.",
+        default=None
+    )
+
+    runtime_group = parser.add_argument_group("Runtime parameters")
+
+    runtime_group.add_argument(
+        "--mode",
+        "-m",
+        choices=["process", "plot"],
+        default=None,
+        help="Specify run mode: process BAM file or plot processed data. Default: None",
+        required=True
+    )
+    runtime_group.add_argument(
+        "--threads",
+        "-t",
+        type=int,
+        default=4,
+        help="Number of threads to use for reading a BAM input file. Default: 4"
+    )
+    # The default False should indicate that
+    # only sequence positions with coverage
+    # will be part of the output (my guess).
+    runtime_group.add_argument(
+        "--all-positions",
+        "-a",
+        action="store_true",
+        dest="all_positions",
+        default=False,
+        help="Output all positions. Default: False"
+    )
+    runtime_group.add_argument(
+        "--regions",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Subset BAM to these regions; format: (.*):(\d+)-(\d+)"
+    )
+    runtime_group.add_argument(
+        "--out-min-discordant-bases",
+        "--minobed",
+        type=int,
+        default=2,
+        help="min number of discordant bases to report in output BED. Default: 2"
+    )
+
+    plot_group = parser.add_argument_group("Plotting options")
+
+    plot_group.add_argument(
+        "--legend",
+        action="store_true",
+        default=False,
+        help="Place legend in plot with location 'best'. Default: False"
+    )
+    plot_group.add_argument(
+        "--zerostart",
+        action="store_true",
+        default=False,
+        help="Adjust x-ticks to 0-based coordinates. Default: False"
+    )
+    plot_group.add_argument(
+        "-y", "--ylim",
+        help="max y axis limit",
+        type=float,
+        default=None
+    )
+    plot_group.add_argument(
+        "-f", "--font-size",
+        help="plot font-size",
+        type=int,
+        default=16
+    )
+    plot_group.add_argument(
+        "--freey",
+        action="store_true",
+        default=False
+    )
+    plot_group.add_argument(
+        "--height",
+        help="figure height",
+        type=float, default=4
+    )
+    plot_group.add_argument(
+        "-w", "--width",
+        help="figure width",
+        type=float,
+        default=16
+    )
+    plot_group.add_argument(
+        "--dpi",
+        help="dpi for png",
+        type=float,
+        default=600
+    )
+    plot_group.add_argument(
+        "--header",
+        action="store_true",
+        default=False
+    )
+    plot_group.add_argument(
+        "--psvsites",
+        help="CC/mi.gml.sites",
+        default=None
+    )
+    plot_group.add_argument(
+        "-s", "--soft",
+        action="store_true",
+        default=False
+    )
+    plot_group.add_argument(
+        "-c",
+        "--minclip",
+        help="min number of clippsed bases in order to be displayed",
+        type=float,
+        default=1000,
+    )
+
+    # following: maybe was a debug switch?
+    parser.add_argument(
+        "-d",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS  # because not used
+    )
+    args = parser.parse_args()
+
+    return args
 
 M = 0  # M  BAM_CMATCH      0
 I = 1  # I  BAM_CINS        1
@@ -83,10 +210,17 @@ conQuery = [M, I, S, E, X]  # these ones "consume" the query
 conAln = [M, I, D, N, S, E, X]  # these ones "consume" the alignments
 
 
-sys.stderr.write("Packages loaded\n")
-
-
 def getSoft(read, group=0):
+    """Check if beginning or end of read alignment
+    is soft- or hard-masked.
+
+    Args:
+        read (_type_): _description_
+        group (int, optional): _description_. Defaults to 0.
+
+    Returns:
+        _type_: _description_
+    """
     rtn = []
     cigar = read.cigartuples
     start = cigar[0]
@@ -100,6 +234,67 @@ def getSoft(read, group=0):
             (read.reference_name, "end", end[1], read.reference_end, read, group)
         )
     return rtn
+
+
+def parse_user_regions(user_regions, refs, regions):
+
+    for region in user_regions:
+        match = re.match("(.+):(\d+)-(\d+)", region)
+        assert match is not None, f"Region is not valid: {region}"
+        chrom, start, end = match.groups()
+        # TODO this smells like a bug - looks like
+        # specifying more than one region per chromosome
+        # would simply overwrite the information in refs?
+        refs[chrom] = [int(start), int(end)]
+        regions.append((chrom, int(start), int(end)))
+    return None
+
+
+def parse_regions_from_bed_input(bed_input, refs, regions):
+
+    # TODO could support compressed bed input
+    with open(bed_input, "r") as bed_file:
+        for ln, line in enumerate(bed_file, start=1):
+            if line.startswith("#"):
+                continue
+            if not line.strip():
+                continue
+            try:
+                chrom, start, end = line.strip().split()[:3]
+                start = int(start)
+                end = int(end)
+            except (ValueError, TypeError, IndexError):
+                sys.stderr.write(f"\nERROR - could not process BED line {ln}: {line.strip()}")
+                raise
+            else:
+                # === same as above in parse_user_regions ===
+                # TODO this smells like a bug - looks like
+                # specifying more than one region per chromosome
+                # would simply overwrite the information in refs?
+                refs[chrom] = [start, end]
+                regions.append((chrom, start, end))
+    return None
+
+
+def get_regions_from_bam(bam_file, threads, refs, regions):
+
+    with pysam.AlignmentFile(bam_file, threads=threads)
+
+
+def process_bam_file(args):
+
+    refs = {}
+    regions = []
+    if args.regions is not None:
+        parse_user_regions(args.regions, refs, regions)
+    if args.in_bed_regions is not None:
+        parse_regions_from_bed_input(args.in_bed_regions, refs, regions)
+
+    if not regions:
+        # implies that all regions from the BAM file are to be processed
+
+
+
 
 
 soft = []
@@ -126,6 +321,10 @@ if args.regions is not None or args.bed is not None:
             regions.append((chrm, int(start), int(end)))
 
 else:
+
+    # TODO
+    # continue refactoring after this line
+
     sys.stderr.write(
         "Reading the whole bam becuase no region or bed argument was made.\n"
     )
@@ -468,3 +667,24 @@ for group_id, group in df.groupby(by="group"):
 
 plt.tight_layout()
 plt.savefig(args.outfile, dpi=args.dpi)
+
+
+def main():
+
+    args = parse_command_line()
+
+    if args.mode == "process":
+        # check that BAM index exists at standard path
+        bai_path = args.infile.with_suffix(".bam.bai")
+        assert bai_path.is_file(), f"No BAM index file detected at path: {bai_path}"
+        process_bam_file(args)
+    elif args.mode == "plot":
+        pass
+    else:
+        raise RuntimeError(f"Unsupported run mode set: {args.mode}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    main()
