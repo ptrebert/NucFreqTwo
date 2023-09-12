@@ -359,8 +359,6 @@ def get_regions_from_bam(bam_file, threads, min_region_size, all_positions, refs
 
     with pysam.AlignmentFile(bam_file, threads=threads) as bam:
         for ref_name, ref_length in zip(bam.references, bam.lengths):
-            if ref_length > int(5e6):
-                continue
             if ref_length < min_region_size:
                 continue
             # logically, I think this should not happen
