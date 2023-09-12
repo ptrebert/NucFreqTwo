@@ -6,16 +6,17 @@ import re
 import sys
 import time
 
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.collections import PatchCollection
 import numpy as np
 import pandas as pd
 import pysam
-import seaborn as sns
 
-matplotlib.use("agg")
+#import matplotlib
+#import matplotlib.pyplot as plt
+#import matplotlib.patches as patches
+#from matplotlib.collections import PatchCollection
+#import seaborn as sns
+
+#matplotlib.use("agg")
 
 __author__ = "Mitchell Vollger"
 __developer__ = "Peter Ebert"
